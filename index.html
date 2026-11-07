@@ -304,7 +304,25 @@
 
   /* ---------- Видео и звук ---------- */
   const remoteCamVideo = document.createElement('video');
-  remoteCamVideo.autoplay = true; remoteCamVideo.playsInline = true;
+  remoteCamVideo.autoplay = true; remoteCamVideo.playsInline = true; remoteCamVideo.muted = true;
+
+  /* Звук идёт через отдельные <audio>, которые никогда не трогаются при
+     перестановке картинок — поэтому голос не пропадает при демонстрации экрана.
+     Все <video> всегда без звука. */
+  function makeAudio() { const a = document.createElement('audio'); a.autoplay = true; a.hidden = true; document.body.appendChild(a); return a; }
+  const voiceAudio = makeAudio();   // голос собеседника
+  const screenAudio = makeAudio();  // звук его демонстрации экрана
+  function playAudio(el, stream) {
+    const s = stream && stream.getAudioTracks().length ? stream : null;
+    if (el.srcObject !== s) el.srcObject = s;
+    if (!s) return;
+    const id = loadDev().spk; if (id && el.setSinkId) el.setSinkId(id).catch(() => {});
+    el.play().catch(() => {
+      // Браузер не дал включить звук без нажатия — включим по первому клику
+      addSys('Нажмите в любом месте страницы, чтобы включить звук');
+      document.addEventListener('click', () => { voiceAudio.play().catch(() => {}); screenAudio.play().catch(() => {}); }, { once: true });
+    });
+  }
   const localVideo = document.createElement('video');
   localVideo.autoplay = true; localVideo.playsInline = true; localVideo.muted = true;
   const screenVideo = document.createElement('video');
@@ -316,6 +334,7 @@
     mediaCall = call;
     call.on('stream', (s) => {
       remoteCamStream = s;
+      playAudio(voiceAudio, s);
       setState('На связи');
       $('placeholder').hidden = true;
       layout();
@@ -324,10 +343,10 @@
     call.on('error', (e) => console.warn(e));
   }
 
-  function showRemoteScreen(s) { remoteScreenStream = s; pinned = null; addSys(remoteName + ' показывает экран'); layout(); }
+  function showRemoteScreen(s) { remoteScreenStream = s; playAudio(screenAudio, s); pinned = null; addSys(remoteName + ' показывает экран'); layout(); }
   function hideRemoteScreen(call) {
     if (screenCallIn !== call) return;
-    screenCallIn = null; remoteScreenStream = null; pinned = null; addSys('Демонстрация экрана закончилась'); layout();
+    screenCallIn = null; remoteScreenStream = null; playAudio(screenAudio, null); pinned = null; addSys('Демонстрация экрана закончилась'); layout();
   }
 
   /* Что показывать большим: по клику на миниатюру можно поменять */
@@ -340,15 +359,10 @@
 
     let big = items.find((i) => i.key === pinned) || items[0];
     const main = $('main');
+    main.muted = true;
     if (main.srcObject !== big.stream) main.srcObject = big.stream;
-    main.muted = !big.sound || big.key === 'me';
     main.style.transform = big.key === 'me' ? 'scaleX(-1)' : '';
     $('mainLabel').textContent = big.label; $('mainLabel').hidden = false;
-
-    // Звук собеседника должен идти всегда, даже если большим показан не он
-    const camBig = big.key === 'rcam';
-    remoteCamVideo.srcObject = remoteCamStream; remoteCamVideo.muted = camBig;
-    if (big.key === 'rscreen') main.muted = false;
 
     const thumbs = $('thumbs'); thumbs.innerHTML = '';
     for (const it of items) {
@@ -359,19 +373,16 @@
       v.style.transform = it.key === 'me' ? 'scaleX(-1)' : '';
       appendThumb(v, it);
     }
-    // Если видео собеседника не в миниатюрах и не на большом экране — держим его для звука скрытым
-    if (!thumbs.contains(remoteCamVideo) && !camBig && remoteCamStream) { remoteCamVideo.hidden = true; document.body.appendChild(remoteCamVideo); }
-    else remoteCamVideo.hidden = false;
     for (const v of thumbs.querySelectorAll('video')) v.play().catch(() => {});
     main.play().catch(() => {});
-    remoteCamVideo.play().catch(() => {});
-    applySpeaker();
+    if (voiceAudio.srcObject && voiceAudio.paused) voiceAudio.play().catch(() => {});
   }
   function appendThumb(v, it) { v.title = it.label + ' — нажмите, чтобы показать крупно'; v.onclick = () => { pinned = it.key; layout(); }; $('thumbs').appendChild(v); }
   function refreshLabels() { layout(); }
 
   function remoteGone() {
     remoteCamStream = null; remoteScreenStream = null; pinned = null;
+    playAudio(voiceAudio, null); playAudio(screenAudio, null);
     if (mediaCall) { try { mediaCall.close(); } catch (e) {} mediaCall = null; }
     if (screenCallOut) { try { screenCallOut.close(); } catch (e) {} screenCallOut = null; }
     if (screenCallIn) { try { screenCallIn.close(); } catch (e) {} screenCallIn = null; }
@@ -522,7 +533,13 @@
     if (!navigator.mediaDevices.getDisplayMedia) { addSys('На этом устройстве показ экрана не поддерживается (обычно — телефон).'); return; }
     if (!mediaCall || !remoteCamStream) { addSys('Сначала дождитесь собеседника, потом показывайте экран.'); return; }
     try {
-      screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 15 }, audio: true });
+      screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 15 },
+        // restrictOwnAudio — не захватывать звук этой вкладки (голос собеседника),
+        // иначе он вернётся ему эхом через звук демонстрации
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true, suppressLocalAudioPlayback: false },
+        systemAudio: 'include'
+      });
     } catch (e) { return; }
     const v = screenStream.getVideoTracks()[0];
     if (v) { v.contentHint = 'detail'; v.onended = stopScreen; }
