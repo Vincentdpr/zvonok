@@ -57,6 +57,13 @@
   .msg.sys { align-self:center; background:none; color:var(--muted); font-size:13px; }
   #chatForm { display:flex; gap:6px; padding:10px; border-top:1px solid var(--line); }
   #bar { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; padding:12px 16px; border-top:1px solid var(--line); }
+  #settings { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:16px; z-index:10; }
+  #settings .card { width:100%; max-width:420px; margin:0; }
+  #settings label { display:block; color:var(--muted); font-size:13px; margin:12px 0 4px; }
+  #settings select { width:100%; font:inherit; padding:9px 10px; border-radius:10px; border:1px solid var(--line); background:#0f1114; color:var(--text); }
+  #settings .row { justify-content:flex-end; margin-top:16px; }
+  #micLevel { height:6px; border-radius:3px; background:#0f1114; margin-top:6px; overflow:hidden; }
+  #micLevel div { height:100%; width:0; background:var(--green); transition:width .08s; }
   @media (max-width:720px) {
     #stage { flex-direction:column; }
     #chat { width:auto; height:38vh; border-left:0; border-top:1px solid var(--line); }
@@ -118,7 +125,25 @@
     <button id="btnCam">📷 Камера</button>
     <button id="btnScreen">🖥 Показать экран</button>
     <button id="btnChat">💬 Чат</button>
+    <button id="btnSettings">⚙ Устройства</button>
     <button id="btnHang" class="off">Завершить</button>
+  </div>
+</div>
+
+<div id="settings" hidden>
+  <div class="card">
+    <h2>Устройства</h2>
+    <label for="micSel">🎙 Микрофон</label>
+    <select id="micSel"></select>
+    <div id="micLevel"><div></div></div>
+    <label for="camSel">📷 Камера</label>
+    <select id="camSel"></select>
+    <label for="spkSel">🔊 Динамики / наушники</label>
+    <select id="spkSel"></select>
+    <div class="row">
+      <button id="btnSpkTest">Проверить звук</button>
+      <button class="primary" id="btnSettingsClose">Готово</button>
+    </div>
   </div>
 </div>
 
@@ -182,9 +207,18 @@
     const dst = ctx.createMediaStreamDestination();
     const t = dst.stream.getAudioTracks()[0]; t.enabled = false; t._blank = true; return t;
   }
+  /* Выбранные устройства запоминаются в браузере */
+  function loadDev() { try { return JSON.parse(localStorage.getItem('zvonok_dev') || '{}') || {}; } catch (e) { return {}; } }
+  function saveDev(p) { try { localStorage.setItem('zvonok_dev', JSON.stringify(Object.assign(loadDev(), p))); } catch (e) {} }
+  function audioC(id) { const c = { echoCancellation: true, noiseSuppression: true }; if (id) c.deviceId = { exact: id }; return c; }
+  function videoC(id) { const c = { width: 1280, height: 720 }; if (id) c.deviceId = { exact: id }; return c; }
+
   async function getLocalStream() {
     let s = null;
-    try { s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: { width: 1280, height: 720 } }); }
+    const dev = loadDev();
+    try { s = await navigator.mediaDevices.getUserMedia({ audio: audioC(dev.mic), video: videoC(dev.cam) }); }
+    catch (e0) { if (dev.mic || dev.cam) { saveDev({ mic: '', cam: '' }); return getLocalStream(); } }
+    if (!s) try { s = await navigator.mediaDevices.getUserMedia({ audio: audioC(), video: videoC() }); }
     catch (e) {
       try { s = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e2) { s = new MediaStream(); }
     }
@@ -327,6 +361,7 @@
     for (const v of thumbs.querySelectorAll('video')) v.play().catch(() => {});
     main.play().catch(() => {});
     remoteCamVideo.play().catch(() => {});
+    applySpeaker();
   }
   function appendThumb(v, it) { v.title = it.label + ' — нажмите, чтобы показать крупно'; v.onclick = () => { pinned = it.key; layout(); }; $('thumbs').appendChild(v); }
   function refreshLabels() { layout(); }
@@ -344,12 +379,105 @@
 
   /* ---------- Кнопки ---------- */
   function trackBtn(btn, kind, label) {
-    const t = localStream.getTracks().find((x) => x.kind === kind);
-    if (!t || t._blank) { btn.disabled = true; btn.textContent = label + ': нет'; return; }
-    btn.onclick = () => { t.enabled = !t.enabled; paint(); };
-    function paint() { btn.className = t.enabled ? '' : 'off'; btn.textContent = label + (t.enabled ? '' : ' выкл.'); }
+    const cur = () => localStream.getTracks().find((x) => x.kind === kind);
+    function paint() {
+      const t = cur();
+      if (!t || t._blank) { btn.disabled = true; btn.className = ''; btn.textContent = label + ': нет'; return; }
+      btn.disabled = false;
+      btn.className = t.enabled ? '' : 'off'; btn.textContent = label + (t.enabled ? '' : ' выкл.');
+    }
+    btn.onclick = () => { const t = cur(); if (t && !t._blank) { t.enabled = !t.enabled; paint(); } };
+    btn._paint = paint;
     paint();
   }
+
+  /* ---------- Выбор устройств ---------- */
+  async function fillDevices() {
+    let list = [];
+    try { list = await navigator.mediaDevices.enumerateDevices(); } catch (e) {}
+    const curId = (kind) => { const t = localStream && localStream.getTracks().find((x) => x.kind === kind && !x._blank); return t ? (t.getSettings().deviceId || '') : ''; };
+    const fill = (sel, kind, chosen, none) => {
+      const items = list.filter((d) => d.kind === kind);
+      sel.innerHTML = '';
+      if (!items.length) { sel.add(new Option(none, '')); sel.disabled = true; return; }
+      sel.disabled = false;
+      items.forEach((d, i) => sel.add(new Option(d.label || (none.split(' ')[0] + ' ' + (i + 1)), d.deviceId)));
+      if (chosen && items.some((d) => d.deviceId === chosen)) sel.value = chosen;
+    };
+    fill($('micSel'), 'audioinput', curId('audio'), 'Микрофонов нет');
+    fill($('camSel'), 'videoinput', curId('video'), 'Камер нет');
+    const canSink = 'setSinkId' in HTMLMediaElement.prototype;
+    fill($('spkSel'), 'audiooutput', loadDev().spk, canSink ? 'Устройство по умолчанию' : 'Выбор недоступен в этом браузере');
+    if (!canSink) $('spkSel').disabled = true;
+  }
+
+  async function switchDevice(kind, deviceId) {
+    let fresh;
+    try {
+      const s = await navigator.mediaDevices.getUserMedia(kind === 'audio' ? { audio: audioC(deviceId) } : { video: videoC(deviceId) });
+      fresh = s.getTracks()[0];
+    } catch (e) { addSys('Не удалось включить устройство: ' + (e.message || e.name)); fillDevices(); return; }
+    const old = localStream.getTracks().find((x) => x.kind === kind);
+    if (old) { fresh.enabled = old._blank ? true : old.enabled; localStream.removeTrack(old); old.stop(); }
+    localStream.addTrack(fresh);
+    // Подменяем дорожку в идущем звонке — без переподключения
+    const pc = mediaCall && mediaCall.peerConnection;
+    if (pc) pc.getSenders().forEach((s) => { if (s.track && s.track.kind === kind) s.replaceTrack(fresh).catch((e) => console.warn(e)); });
+    saveDev(kind === 'audio' ? { mic: deviceId } : { cam: deviceId });
+    $('btnMic')._paint && $('btnMic')._paint();
+    $('btnCam')._paint && $('btnCam')._paint();
+    if (kind === 'audio') watchMic();
+    // Перерисовываем своё видео
+    [$('main'), localVideo].forEach((v) => { if (v.srcObject === localStream) { v.srcObject = null; v.srcObject = localStream; v.play().catch(() => {}); } });
+  }
+
+  function applySpeaker() {
+    const id = loadDev().spk || '';
+    document.querySelectorAll('video, audio').forEach((v) => { if (v.setSinkId) v.setSinkId(id).catch(() => {}); });
+  }
+
+  /* Индикатор громкости микрофона в окне настроек */
+  let meterCtx = null, meterRaf = 0;
+  function watchMic() {
+    cancelAnimationFrame(meterRaf);
+    if (meterCtx) { meterCtx.close().catch(() => {}); meterCtx = null; }
+    if ($('settings').hidden) return;
+    const t = localStream && localStream.getAudioTracks().find((x) => !x._blank);
+    if (!t) return;
+    meterCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const an = meterCtx.createAnalyser(); an.fftSize = 512;
+    meterCtx.createMediaStreamSource(new MediaStream([t])).connect(an);
+    const buf = new Uint8Array(an.fftSize);
+    const bar = $('micLevel').firstElementChild;
+    (function tick() {
+      an.getByteTimeDomainData(buf);
+      let peak = 0; for (const b of buf) peak = Math.max(peak, Math.abs(b - 128));
+      bar.style.width = Math.min(100, peak / 64 * 100) + '%';
+      meterRaf = requestAnimationFrame(tick);
+    })();
+  }
+
+  function testSpeaker() {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const dst = ctx.createMediaStreamDestination();
+    const o = ctx.createOscillator(); const g = ctx.createGain();
+    o.frequency.value = 660; g.gain.value = 0.15; o.connect(g).connect(dst);
+    const a = new Audio(); a.srcObject = dst.stream;
+    const id = loadDev().spk; if (id && a.setSinkId) a.setSinkId(id).catch(() => {});
+    a.play().catch(() => {}); o.start();
+    setTimeout(() => { o.stop(); ctx.close(); a.srcObject = null; }, 700);
+  }
+
+  function openSettings() { $('settings').hidden = false; fillDevices(); watchMic(); }
+  function closeSettings() { $('settings').hidden = true; watchMic(); }
+  $('btnSettings').onclick = openSettings;
+  $('btnSettingsClose').onclick = closeSettings;
+  $('settings').onclick = (e) => { if (e.target === $('settings')) closeSettings(); };
+  $('micSel').onchange = (e) => switchDevice('audio', e.target.value);
+  $('camSel').onchange = (e) => switchDevice('video', e.target.value);
+  $('spkSel').onchange = (e) => { saveDev({ spk: e.target.value }); applySpeaker(); };
+  $('btnSpkTest').onclick = testSpeaker;
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', () => { if (!$('settings').hidden) fillDevices(); });
 
   async function toggleScreen() {
     if (screenStream) { stopScreen(); return; }
