@@ -396,18 +396,18 @@
     let list = [];
     try { list = await navigator.mediaDevices.enumerateDevices(); } catch (e) {}
     const curId = (kind) => { const t = localStream && localStream.getTracks().find((x) => x.kind === kind && !x._blank); return t ? (t.getSettings().deviceId || '') : ''; };
-    const fill = (sel, kind, chosen, none) => {
+    const fill = (sel, kind, chosen, none, word) => {
       const items = list.filter((d) => d.kind === kind);
       sel.innerHTML = '';
       if (!items.length) { sel.add(new Option(none, '')); sel.disabled = true; return; }
       sel.disabled = false;
-      items.forEach((d, i) => sel.add(new Option(d.label || (none.split(' ')[0] + ' ' + (i + 1)), d.deviceId)));
+      items.forEach((d, i) => sel.add(new Option(d.label || (word + ' ' + (i + 1)), d.deviceId)));
       if (chosen && items.some((d) => d.deviceId === chosen)) sel.value = chosen;
     };
-    fill($('micSel'), 'audioinput', curId('audio'), 'Микрофонов нет');
-    fill($('camSel'), 'videoinput', curId('video'), 'Камер нет');
+    fill($('micSel'), 'audioinput', curId('audio'), 'Микрофонов нет', 'Микрофон');
+    fill($('camSel'), 'videoinput', curId('video'), 'Камер нет', 'Камера');
     const canSink = 'setSinkId' in HTMLMediaElement.prototype;
-    fill($('spkSel'), 'audiooutput', loadDev().spk, canSink ? 'Устройство по умолчанию' : 'Выбор недоступен в этом браузере');
+    fill($('spkSel'), 'audiooutput', loadDev().spk, canSink ? 'Устройство по умолчанию' : 'Выбор недоступен в этом браузере', 'Динамики');
     if (!canSink) $('spkSel').disabled = true;
   }
 
