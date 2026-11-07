@@ -172,7 +172,11 @@
   ];
   const PEER_OPTS = { config: { iceServers: ICE_SERVERS }, debug: 1 };
 
-  let peer = null, dataConn = null, mediaCall = null;
+  let peer = null, dataConn = null, mediaCall = null, camCall = null;
+  /* Голос и камера идут ДВУМЯ отдельными соединениями: если камера
+     подвисает или переключается, звук от этого никак не зависит. */
+  const voiceOut = () => new MediaStream(localStream.getAudioTracks());
+  const camOut = () => new MediaStream(localStream.getVideoTracks());
   let screenCallOut = null, screenCallIn = null;
   let localStream = null, screenStream = null;
   let remoteName = 'Собеседник';
@@ -263,7 +267,8 @@
       } else {
         const hostId = PREFIX + code;
         setupData(peer.connect(hostId, { reliable: true, metadata: { name: myName } }));
-        setupMedia(peer.call(hostId, localStream, { metadata: { name: myName } }));
+        setupMedia(peer.call(hostId, voiceOut(), { metadata: { kind: 'voice' } }));
+        setupCam(peer.call(hostId, camOut(), { metadata: { kind: 'cam' } }));
         setState('Звоним…');
       }
     });
@@ -282,8 +287,14 @@
         call.on('close', () => hideRemoteScreen(call));
         return;
       }
-      if (mediaCall && mediaCall.open) { call.close(); return; }
-      call.answer(localStream);
+      if (meta.kind === 'cam') {
+        if (camCall && camCall.open && camCall.peer !== call.peer) { call.close(); return; }
+        call.answer(camOut());
+        setupCam(call);
+        return;
+      }
+      if (mediaCall && mediaCall.open && mediaCall.peer !== call.peer) { call.close(); return; }
+      call.answer(voiceOut());
       setupMedia(call);
     });
   }
@@ -333,13 +344,21 @@
   function setupMedia(call) {
     mediaCall = call;
     call.on('stream', (s) => {
-      remoteCamStream = s;
       playAudio(voiceAudio, s);
       setState('На связи');
+    });
+    call.on('close', () => { if (mediaCall === call) remoteGone(); });
+    call.on('error', (e) => console.warn(e));
+  }
+
+  function setupCam(call) {
+    camCall = call;
+    call.on('stream', (s) => {
+      remoteCamStream = s;
       $('placeholder').hidden = true;
       layout();
     });
-    call.on('close', () => { if (mediaCall === call) remoteGone(); });
+    call.on('close', () => { if (camCall === call) { camCall = null; remoteCamStream = null; layout(); } });
     call.on('error', (e) => console.warn(e));
   }
 
@@ -384,6 +403,7 @@
     remoteCamStream = null; remoteScreenStream = null; pinned = null;
     playAudio(voiceAudio, null); playAudio(screenAudio, null);
     if (mediaCall) { try { mediaCall.close(); } catch (e) {} mediaCall = null; }
+    if (camCall) { try { camCall.close(); } catch (e) {} camCall = null; }
     if (screenCallOut) { try { screenCallOut.close(); } catch (e) {} screenCallOut = null; }
     if (screenCallIn) { try { screenCallIn.close(); } catch (e) {} screenCallIn = null; }
     dataConn = null;
@@ -436,7 +456,8 @@
     if (old) { fresh.enabled = old._blank ? true : old.enabled; localStream.removeTrack(old); old.stop(); }
     localStream.addTrack(fresh);
     // Подменяем дорожку в идущем звонке — без переподключения
-    const pc = mediaCall && mediaCall.peerConnection;
+    const c = kind === 'audio' ? mediaCall : camCall;
+    const pc = c && c.peerConnection;
     if (pc) pc.getSenders().forEach((s) => { if (s.track && s.track.kind === kind) s.replaceTrack(fresh).catch((e) => console.warn(e)); });
     saveDev(kind === 'audio' ? { mic: deviceId } : { cam: deviceId });
     $('btnMic')._paint && $('btnMic')._paint();
@@ -531,7 +552,7 @@
   async function toggleScreen() {
     if (screenStream) { stopScreen(); return; }
     if (!navigator.mediaDevices.getDisplayMedia) { addSys('На этом устройстве показ экрана не поддерживается (обычно — телефон).'); return; }
-    if (!mediaCall || !remoteCamStream) { addSys('Сначала дождитесь собеседника, потом показывайте экран.'); return; }
+    if (!mediaCall || !dataConn || !dataConn.open) { addSys('Сначала дождитесь собеседника, потом показывайте экран.'); return; }
     try {
       screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: 15 },
