@@ -94,6 +94,7 @@
       <button id="btnJoin">Войти</button>
     </div>
   </div>
+  <button id="btnCheck">⚙ Проверить микрофон и камеру</button>
   <div id="status"></div>
 </div>
 
@@ -133,9 +134,13 @@
 <div id="settings" hidden>
   <div class="card">
     <h2>Устройства</h2>
-    <label for="micSel">🎙 Микрофон</label>
+    <video id="preview" autoplay playsinline muted style="width:100%;aspect-ratio:16/9;object-fit:cover;background:#000;border-radius:10px;transform:scaleX(-1)"></video>
+    <label for="micSel">🎙 Микрофон — скажите что-нибудь, полоска должна двигаться</label>
     <select id="micSel"></select>
     <div id="micLevel"><div></div></div>
+    <div class="row" style="justify-content:flex-start;margin-top:8px">
+      <button id="btnMicTest">⏺ Записать 3 сек и прослушать</button>
+    </div>
     <label for="camSel">📷 Камера</label>
     <select id="camSel"></select>
     <label for="spkSel">🔊 Динамики / наушники</label>
@@ -239,8 +244,7 @@
     readName();
     if (!window.Peer) { status('Не загрузилась библиотека PeerJS — проверьте интернет.', true); return; }
     if (!navigator.mediaDevices) { status('Браузер не поддерживает звонки. Откройте страницу в Chrome, Edge, Яндекс или Firefox.', true); return; }
-    status('Включаем камеру и микрофон…');
-    localStream = await getLocalStream();
+    if (!localStream) { status('Включаем камеру и микрофон…'); localStream = await getLocalStream(); }
     status('Подключаемся…');
 
     peer = asHost ? new Peer(PREFIX + code, PEER_OPTS) : new Peer(PEER_OPTS);
@@ -428,7 +432,7 @@
     $('btnCam')._paint && $('btnCam')._paint();
     if (kind === 'audio') watchMic();
     // Перерисовываем своё видео
-    [$('main'), localVideo].forEach((v) => { if (v.srcObject === localStream) { v.srcObject = null; v.srcObject = localStream; v.play().catch(() => {}); } });
+    [$('main'), localVideo, $('preview')].forEach((v) => { if (v.srcObject === localStream) { v.srcObject = null; v.srcObject = localStream; v.play().catch(() => {}); } });
   }
 
   function applySpeaker() {
@@ -468,9 +472,43 @@
     setTimeout(() => { o.stop(); ctx.close(); a.srcObject = null; }, 700);
   }
 
-  function openSettings() { $('settings').hidden = false; fillDevices(); watchMic(); }
-  function closeSettings() { $('settings').hidden = true; watchMic(); }
+  /* Проверка микрофона: записать 3 секунды и проиграть в выбранные динамики */
+  function testMic() {
+    const t = localStream && localStream.getAudioTracks().find((x) => !x._blank);
+    const btn = $('btnMicTest');
+    if (!t || !window.MediaRecorder) { btn.textContent = 'Микрофон не найден'; return; }
+    const rec = new MediaRecorder(new MediaStream([t]));
+    const parts = [];
+    rec.ondataavailable = (e) => { if (e.data.size) parts.push(e.data); };
+    rec.onstop = () => {
+      const url = URL.createObjectURL(new Blob(parts, { type: rec.mimeType }));
+      const a = new Audio(url);
+      const id = loadDev().spk; if (id && a.setSinkId) a.setSinkId(id).catch(() => {});
+      btn.textContent = '🔊 Воспроизведение…';
+      a.onended = a.onerror = () => { URL.revokeObjectURL(url); btn.disabled = false; btn.textContent = '⏺ Записать 3 сек и прослушать'; };
+      a.play().catch(() => a.onended());
+    };
+    btn.disabled = true; btn.textContent = '🔴 Говорите… 3';
+    rec.start();
+    let n = 3;
+    const iv = setInterval(() => { n--; if (n > 0) btn.textContent = '🔴 Говорите… ' + n; else { clearInterval(iv); rec.stop(); } }, 1000);
+  }
+
+  async function openSettings() {
+    if (!localStream) {
+      if (!navigator.mediaDevices) { status('Браузер не поддерживает звонки.', true); return; }
+      status('Включаем камеру и микрофон…');
+      localStream = await getLocalStream();
+      status('');
+    }
+    $('settings').hidden = false;
+    $('preview').srcObject = localStream; $('preview').play().catch(() => {});
+    fillDevices(); watchMic();
+  }
+  function closeSettings() { $('settings').hidden = true; $('preview').srcObject = null; watchMic(); }
   $('btnSettings').onclick = openSettings;
+  $('btnCheck').onclick = openSettings;
+  $('btnMicTest').onclick = testMic;
   $('btnSettingsClose').onclick = closeSettings;
   $('settings').onclick = (e) => { if (e.target === $('settings')) closeSettings(); };
   $('micSel').onchange = (e) => switchDevice('audio', e.target.value);
