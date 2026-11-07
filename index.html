@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>Звонок</title>
+<!--
+  Звонок один на один с демонстрацией экрана.
+  Работает без своего сервера и без домена: соединение напрямую между
+  браузерами (WebRTC), а «познакомиться» им помогает бесплатный сервер PeerJS.
+  Файл можно просто открыть с диска двойным щелчком или выложить
+  на любой бесплатный https-хостинг (GitHub Pages, Netlify и т. п.).
+-->
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>window.Peer || document.write('<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"><\/script>');</script>
+<style>
+  :root { --bg:#14161a; --panel:#1f2329; --line:#2e333b; --text:#e9ecf1; --muted:#9aa3ae; --accent:#e0a33a; --red:#d9534f; --green:#3fae6a; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font:15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  button { font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--panel); color:var(--text); border-radius:10px; padding:10px 16px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#1b1408; font-weight:600; }
+  button.off { background:var(--red); border-color:var(--red); }
+  button.on { background:var(--green); border-color:var(--green); }
+  input { font:inherit; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0f1114; color:var(--text); width:100%; }
+  [hidden] { display:none !important; }
+
+  /* Стартовый экран */
+  #start { max-width:440px; margin:0 auto; padding:48px 16px; }
+  #start h1 { font-size:24px; margin:0 0 6px; }
+  #start p { color:var(--muted); margin:0 0 24px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:16px; }
+  .card h2 { font-size:16px; margin:0 0 10px; }
+  .row { display:flex; gap:8px; }
+  .row button { white-space:nowrap; }
+  #status { color:var(--muted); min-height:1.4em; margin-top:8px; }
+  #status.err { color:#ff8a85; }
+
+  /* Экран звонка */
+  #call { position:fixed; inset:0; display:grid; grid-template-rows:auto 1fr auto; }
+  #top { padding:10px 16px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  #top .code { font-family:ui-monospace, Consolas, monospace; background:#0f1114; padding:6px 10px; border-radius:8px; user-select:all; }
+  #top .grow { flex:1; }
+  #state { color:var(--muted); }
+  #stage { position:relative; display:flex; min-height:0; }
+  #videos { position:relative; flex:1; min-width:0; background:#000; }
+  #main { width:100%; height:100%; object-fit:contain; background:#000; }
+  #mainLabel { position:absolute; left:12px; top:10px; background:rgba(0,0,0,.55); padding:4px 10px; border-radius:8px; font-size:13px; }
+  #thumbs { position:absolute; right:12px; bottom:12px; display:flex; gap:8px; }
+  #thumbs video { width:180px; max-width:28vw; aspect-ratio:16/9; object-fit:cover; background:#222; border-radius:10px; border:2px solid var(--line); cursor:pointer; }
+  #placeholder { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); text-align:center; padding:16px; }
+  #chat { width:300px; border-left:1px solid var(--line); display:flex; flex-direction:column; background:var(--panel); }
+  #msgs { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:6px; }
+  .msg { max-width:85%; padding:7px 10px; border-radius:10px; background:#2a3038; word-wrap:break-word; white-space:pre-wrap; }
+  .msg.me { align-self:flex-end; background:#4a3a1c; }
+  .msg.sys { align-self:center; background:none; color:var(--muted); font-size:13px; }
+  #chatForm { display:flex; gap:6px; padding:10px; border-top:1px solid var(--line); }
+  #bar { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; padding:12px 16px; border-top:1px solid var(--line); }
+  @media (max-width:720px) {
+    #stage { flex-direction:column; }
+    #chat { width:auto; height:38vh; border-left:0; border-top:1px solid var(--line); }
+    #bar button { padding:9px 12px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="start">
+  <h1>Звонок</h1>
+  <p>Видео, голос, чат и демонстрация экрана. Без регистрации и без своего сервера.</p>
+
+  <div class="card">
+    <h2>Ваше имя</h2>
+    <input id="name" maxlength="40" placeholder="Как вас называть">
+  </div>
+
+  <div class="card">
+    <h2>Начать звонок</h2>
+    <button class="primary" id="btnCreate">Создать комнату</button>
+  </div>
+
+  <div class="card">
+    <h2>Подключиться по коду</h2>
+    <div class="row">
+      <input id="joinCode" placeholder="Код от собеседника" autocomplete="off">
+      <button id="btnJoin">Войти</button>
+    </div>
+  </div>
+  <div id="status"></div>
+</div>
+
+<div id="call" hidden>
+  <div id="top">
+    <span>Код комнаты:</span>
+    <span class="code" id="roomCode"></span>
+    <button id="btnCopy">Скопировать</button>
+    <span class="grow"></span>
+    <span id="state">Ждём собеседника…</span>
+  </div>
+  <div id="stage">
+    <div id="videos">
+      <video id="main" autoplay playsinline></video>
+      <div id="mainLabel" hidden></div>
+      <div id="placeholder">Отправьте собеседнику код комнаты (или ссылку) — он введёт его у себя.</div>
+      <div id="thumbs"></div>
+    </div>
+    <div id="chat">
+      <div id="msgs"></div>
+      <form id="chatForm">
+        <input id="chatInput" placeholder="Сообщение" autocomplete="off">
+        <button type="submit">➤</button>
+      </form>
+    </div>
+  </div>
+  <div id="bar">
+    <button id="btnMic">🎙 Микрофон</button>
+    <button id="btnCam">📷 Камера</button>
+    <button id="btnScreen">🖥 Показать экран</button>
+    <button id="btnChat">💬 Чат</button>
+    <button id="btnHang" class="off">Завершить</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const PREFIX = 'zvonok-';
+
+  /* Серверы для «пробивания» сетей. STUN хватает в большинстве случаев.
+     Если у кого-то вечно «Звоним…» (мобильный интернет, офис, другая страна
+     со строгим провайдером) — добавьте TURN: бесплатно на metered.ca
+     или Cloudflare Calls, логин и пароль из их кабинета. */
+  const ICE_SERVERS = [
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.services.mozilla.com:3478' },
+    { urls: 'turn:eu-0.turn.peerjs.com:3478', username: 'peerjs', credential: 'peerjsp' },
+    { urls: 'turn:us-0.turn.peerjs.com:3478', username: 'peerjs', credential: 'peerjsp' },
+    // { urls: ['turn:АДРЕС:80', 'turn:АДРЕС:443?transport=tcp'], username: 'ЛОГИН', credential: 'ПАРОЛЬ' },
+  ];
+  const PEER_OPTS = { config: { iceServers: ICE_SERVERS }, debug: 1 };
+
+  let peer = null, dataConn = null, mediaCall = null;
+  let screenCallOut = null, screenCallIn = null;
+  let localStream = null, screenStream = null;
+  let remoteName = 'Собеседник';
+  let myName = '';
+
+  /* ---------- Имя ---------- */
+  try { $('name').value = localStorage.getItem('zvonok_name') || ''; } catch (e) {}
+  const initialCode = new URLSearchParams(location.search).get('room');
+  if (initialCode) {
+    // Пришли по ссылке: оставляем только «имя + Войти»
+    $('joinCode').value = cleanCode(initialCode);
+    $('btnCreate').closest('.card').hidden = true;
+    $('btnJoin').className = 'primary';
+    $('btnJoin').textContent = 'Войти в звонок';
+    document.querySelector('#start p').textContent = 'Вас пригласили в звонок. Введите имя и нажмите «Войти в звонок».';
+  }
+
+  function status(t, err) { $('status').textContent = t || ''; $('status').className = err ? 'err' : ''; }
+  function setState(t) { $('state').textContent = t; }
+  function cleanCode(s) { return String(s || '').trim().toLowerCase().replace(/^.*[?&]room=/, '').replace(/[^a-z0-9]/g, ''); }
+
+  function readName() {
+    myName = $('name').value.trim() || 'Гость';
+    try { localStorage.setItem('zvonok_name', myName); } catch (e) {}
+  }
+
+  /* ---------- Камера и микрофон ----------
+     Если камеры или микрофона нет — подставляем «пустые» дорожки,
+     чтобы звонок всё равно состоялся (можно только слушать и смотреть экран). */
+  function blankVideoTrack() {
+    const c = Object.assign(document.createElement('canvas'), { width: 320, height: 180 });
+    const g = c.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, 320, 180);
+    const t = c.captureStream(1).getVideoTracks()[0]; t.enabled = false; t._blank = true; return t;
+  }
+  function silentAudioTrack() {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const dst = ctx.createMediaStreamDestination();
+    const t = dst.stream.getAudioTracks()[0]; t.enabled = false; t._blank = true; return t;
+  }
+  async function getLocalStream() {
+    let s = null;
+    try { s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: { width: 1280, height: 720 } }); }
+    catch (e) {
+      try { s = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e2) { s = new MediaStream(); }
+    }
+    if (!s.getAudioTracks().length) s.addTrack(silentAudioTrack());
+    if (!s.getVideoTracks().length) s.addTrack(blankVideoTrack());
+    return s;
+  }
+
+  /* ---------- Вход в комнату ---------- */
+  function randomCode() {
+    const a = 'abcdefghjkmnpqrstuvwxyz23456789'; let s = '';
+    const r = crypto.getRandomValues(new Uint8Array(8));
+    for (const b of r) s += a[b % a.length];
+    return s;
+  }
+
+  async function start(asHost, code) {
+    readName();
+    if (!window.Peer) { status('Не загрузилась библиотека PeerJS — проверьте интернет.', true); return; }
+    if (!navigator.mediaDevices) { status('Браузер не поддерживает звонки. Откройте страницу в Chrome, Edge, Яндекс или Firefox.', true); return; }
+    status('Включаем камеру и микрофон…');
+    localStream = await getLocalStream();
+    status('Подключаемся…');
+
+    peer = asHost ? new Peer(PREFIX + code, PEER_OPTS) : new Peer(PEER_OPTS);
+    peer.on('error', (err) => {
+      if (err.type === 'unavailable-id') { peer.destroy(); start(true, randomCode()); return; }
+      if (err.type === 'peer-unavailable') { setState('Комната не найдена — проверьте код или попросите собеседника создать её заново.'); addSys('Комната не найдена'); return; }
+      if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error') { setState('Нет связи с сервером, пробуем снова…'); return; }
+      console.warn(err); setState('Ошибка: ' + (err.message || err.type));
+    });
+    peer.on('disconnected', () => { if (!peer.destroyed) setTimeout(() => { try { peer.reconnect(); } catch (e) {} }, 1500); });
+
+    peer.on('open', () => {
+      showCall(code);
+      if (asHost) {
+        setState('Ждём собеседника…');
+      } else {
+        const hostId = PREFIX + code;
+        setupData(peer.connect(hostId, { reliable: true, metadata: { name: myName } }));
+        setupMedia(peer.call(hostId, localStream, { metadata: { name: myName } }));
+        setState('Звоним…');
+      }
+    });
+
+    peer.on('connection', (conn) => {
+      if (dataConn && dataConn.open) { conn.on('open', () => { conn.send({ t: 'busy' }); setTimeout(() => conn.close(), 500); }); return; }
+      setupData(conn);
+    });
+    peer.on('call', (call) => {
+      const meta = call.metadata || {};
+      if (meta.screen) {
+        if (screenCallIn) screenCallIn.close();
+        screenCallIn = call;
+        call.answer();
+        call.on('stream', (s) => showRemoteScreen(s));
+        call.on('close', () => hideRemoteScreen(call));
+        return;
+      }
+      if (mediaCall && mediaCall.open) { call.close(); return; }
+      call.answer(localStream);
+      setupMedia(call);
+    });
+  }
+
+  /* ---------- Чат и служебные сообщения ---------- */
+  function setupData(conn) {
+    dataConn = conn;
+    conn.on('open', () => conn.send({ t: 'hello', name: myName }));
+    conn.on('data', (d) => {
+      if (!d || typeof d !== 'object') return;
+      if (d.t === 'hello') { remoteName = String(d.name || 'Собеседник').slice(0, 40); addSys(remoteName + ' на связи'); refreshLabels(); }
+      else if (d.t === 'msg') addMsg(String(d.text || '').slice(0, 2000), false);
+      else if (d.t === 'busy') { setState('В этой комнате уже идёт разговор.'); }
+      else if (d.t === 'bye') { addSys(remoteName + ' завершил(а) звонок'); remoteGone(); }
+    });
+    conn.on('close', () => { if (dataConn === conn) { addSys('Связь с собеседником прервалась'); remoteGone(); } });
+  }
+
+  /* ---------- Видео и звук ---------- */
+  const remoteCamVideo = document.createElement('video');
+  remoteCamVideo.autoplay = true; remoteCamVideo.playsInline = true;
+  const localVideo = document.createElement('video');
+  localVideo.autoplay = true; localVideo.playsInline = true; localVideo.muted = true;
+  const screenVideo = document.createElement('video');
+  screenVideo.autoplay = true; screenVideo.playsInline = true; screenVideo.muted = true;
+
+  let remoteCamStream = null, remoteScreenStream = null, pinned = null;
+
+  function setupMedia(call) {
+    mediaCall = call;
+    call.on('stream', (s) => {
+      remoteCamStream = s;
+      setState('На связи');
+      $('placeholder').hidden = true;
+      layout();
+    });
+    call.on('close', () => { if (mediaCall === call) remoteGone(); });
+    call.on('error', (e) => console.warn(e));
+  }
+
+  function showRemoteScreen(s) { remoteScreenStream = s; pinned = null; addSys(remoteName + ' показывает экран'); layout(); }
+  function hideRemoteScreen(call) {
+    if (screenCallIn !== call) return;
+    screenCallIn = null; remoteScreenStream = null; pinned = null; addSys('Демонстрация экрана закончилась'); layout();
+  }
+
+  /* Что показывать большим: по клику на миниатюру можно поменять */
+  function layout() {
+    const items = [];
+    if (remoteScreenStream) items.push({ key: 'rscreen', stream: remoteScreenStream, label: 'Экран: ' + remoteName, el: null, sound: true });
+    if (remoteCamStream) items.push({ key: 'rcam', stream: remoteCamStream, label: remoteName, sound: true });
+    if (screenStream) items.push({ key: 'myscreen', stream: screenStream, label: 'Ваш экран', sound: false });
+    items.push({ key: 'me', stream: localStream, label: 'Вы', sound: false });
+
+    let big = items.find((i) => i.key === pinned) || items[0];
+    const main = $('main');
+    if (main.srcObject !== big.stream) main.srcObject = big.stream;
+    main.muted = !big.sound || big.key === 'me';
+    main.style.transform = big.key === 'me' ? 'scaleX(-1)' : '';
+    $('mainLabel').textContent = big.label; $('mainLabel').hidden = false;
+
+    // Звук собеседника должен идти всегда, даже если большим показан не он
+    const camBig = big.key === 'rcam';
+    remoteCamVideo.srcObject = remoteCamStream; remoteCamVideo.muted = camBig;
+    if (big.key === 'rscreen') main.muted = false;
+
+    const thumbs = $('thumbs'); thumbs.innerHTML = '';
+    for (const it of items) {
+      if (it === big) continue;
+      const v = it.key === 'rcam' ? remoteCamVideo : it.key === 'me' ? localVideo : screenVideo;
+      if (it.key === 'rscreen') { const tmp = document.createElement('video'); tmp.autoplay = true; tmp.playsInline = true; tmp.muted = true; tmp.srcObject = it.stream; appendThumb(tmp, it); continue; }
+      if (v.srcObject !== it.stream) v.srcObject = it.stream;
+      v.style.transform = it.key === 'me' ? 'scaleX(-1)' : '';
+      appendThumb(v, it);
+    }
+    // Если видео собеседника не в миниатюрах и не на большом экране — держим его для звука скрытым
+    if (!thumbs.contains(remoteCamVideo) && !camBig && remoteCamStream) { remoteCamVideo.hidden = true; document.body.appendChild(remoteCamVideo); }
+    else remoteCamVideo.hidden = false;
+    for (const v of thumbs.querySelectorAll('video')) v.play().catch(() => {});
+    main.play().catch(() => {});
+    remoteCamVideo.play().catch(() => {});
+  }
+  function appendThumb(v, it) { v.title = it.label + ' — нажмите, чтобы показать крупно'; v.onclick = () => { pinned = it.key; layout(); }; $('thumbs').appendChild(v); }
+  function refreshLabels() { layout(); }
+
+  function remoteGone() {
+    remoteCamStream = null; remoteScreenStream = null; pinned = null;
+    if (mediaCall) { try { mediaCall.close(); } catch (e) {} mediaCall = null; }
+    if (screenCallOut) { try { screenCallOut.close(); } catch (e) {} screenCallOut = null; }
+    if (screenCallIn) { try { screenCallIn.close(); } catch (e) {} screenCallIn = null; }
+    dataConn = null;
+    setState('Собеседник отключился. Он может снова войти по тому же коду.');
+    $('placeholder').hidden = false;
+    layout();
+  }
+
+  /* ---------- Кнопки ---------- */
+  function trackBtn(btn, kind, label) {
+    const t = localStream.getTracks().find((x) => x.kind === kind);
+    if (!t || t._blank) { btn.disabled = true; btn.textContent = label + ': нет'; return; }
+    btn.onclick = () => { t.enabled = !t.enabled; paint(); };
+    function paint() { btn.className = t.enabled ? '' : 'off'; btn.textContent = label + (t.enabled ? '' : ' выкл.'); }
+    paint();
+  }
+
+  async function toggleScreen() {
+    if (screenStream) { stopScreen(); return; }
+    if (!navigator.mediaDevices.getDisplayMedia) { addSys('На этом устройстве показ экрана не поддерживается (обычно — телефон).'); return; }
+    if (!mediaCall || !remoteCamStream) { addSys('Сначала дождитесь собеседника, потом показывайте экран.'); return; }
+    try {
+      screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 15 }, audio: true });
+    } catch (e) { return; }
+    const v = screenStream.getVideoTracks()[0];
+    if (v) { v.contentHint = 'detail'; v.onended = stopScreen; }
+    screenCallOut = peer.call(mediaCall.peer, screenStream, { metadata: { screen: true } });
+    $('btnScreen').className = 'on'; $('btnScreen').textContent = '🖥 Остановить показ';
+    addSys('Вы показываете экран');
+    layout();
+  }
+  function stopScreen() {
+    if (!screenStream) return;
+    screenStream.getTracks().forEach((t) => t.stop());
+    screenStream = null;
+    if (screenCallOut) { try { screenCallOut.close(); } catch (e) {} screenCallOut = null; }
+    $('btnScreen').className = ''; $('btnScreen').textContent = '🖥 Показать экран';
+    if (pinned === 'myscreen') pinned = null;
+    layout();
+  }
+
+  function hangUp() {
+    try { if (dataConn && dataConn.open) dataConn.send({ t: 'bye' }); } catch (e) {}
+    setTimeout(() => {
+      stopScreen();
+      if (localStream) localStream.getTracks().forEach((t) => t.stop());
+      if (peer) peer.destroy();
+      location.href = location.pathname;
+    }, 200);
+  }
+
+  function addMsg(text, me) {
+    const d = document.createElement('div'); d.className = 'msg' + (me ? ' me' : ''); d.textContent = text;
+    $('msgs').appendChild(d); $('msgs').scrollTop = 1e9;
+    if (!me && $('chat').hidden) $('btnChat').className = 'on';
+  }
+  function addSys(text) {
+    const d = document.createElement('div'); d.className = 'msg sys'; d.textContent = text;
+    $('msgs').appendChild(d); $('msgs').scrollTop = 1e9;
+  }
+
+  function showCall(code) {
+    $('start').hidden = true; $('call').hidden = false;
+    $('roomCode').textContent = code;
+    const link = /^https?:$/.test(location.protocol) ? location.origin + location.pathname + '?room=' + code : '';
+    $('btnCopy').textContent = link ? 'Скопировать ссылку' : 'Скопировать код';
+    $('btnCopy').onclick = () => {
+      const txt = link || code;
+      (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(
+        () => { $('btnCopy').textContent = 'Скопировано ✓'; setTimeout(() => { $('btnCopy').textContent = link ? 'Скопировать ссылку' : 'Скопировать код'; }, 1500); },
+        () => prompt('Скопируйте:', txt));
+    };
+    trackBtn($('btnMic'), 'audio', '🎙 Микрофон');
+    trackBtn($('btnCam'), 'video', '📷 Камера');
+    $('btnScreen').hidden = !navigator.mediaDevices.getDisplayMedia;
+    $('btnScreen').onclick = toggleScreen;
+    $('btnHang').onclick = hangUp;
+    $('btnChat').onclick = () => { $('chat').hidden = !$('chat').hidden; $('btnChat').className = ''; };
+    if (matchMedia('(max-width:720px)').matches) $('chat').hidden = true;
+    layout();
+  }
+
+  $('chatForm').onsubmit = (e) => {
+    e.preventDefault();
+    const text = $('chatInput').value.trim();
+    if (!text) return;
+    if (!dataConn || !dataConn.open) { addSys('Собеседник ещё не подключился'); return; }
+    dataConn.send({ t: 'msg', text }); addMsg(text, true); $('chatInput').value = '';
+  };
+
+  $('btnCreate').onclick = () => start(true, randomCode());
+  $('btnJoin').onclick = () => {
+    const code = cleanCode($('joinCode').value);
+    if (!code) { status('Введите код комнаты.', true); return; }
+    start(false, code);
+  };
+  $('joinCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnJoin').click(); });
+  window.addEventListener('beforeunload', () => { try { if (dataConn && dataConn.open) dataConn.send({ t: 'bye' }); } catch (e) {} });
+})();
+</script>
+</body>
+</html>
